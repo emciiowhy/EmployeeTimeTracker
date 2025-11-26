@@ -9,14 +9,18 @@ namespace EmployeeTimeTracker
 {
     internal static class Program
     {
-        // Limits for sanity checks
+        // -------------------------
+        // Configurable sanity limits
+        // -------------------------
         private const decimal MAX_MONTHLY_SALARY = 1_000_000m;
         private const decimal MAX_HOURLY_RATE = 10_000m;
         private const decimal MAX_OVERTIME_RATE = 10_000m;
 
+        // Managers (keep singletons here)
         private static readonly EmployeeManager employeeManager = new();
         private static readonly TimeRecordManager timeManager = new();
 
+        // Entry point
         private static void Main()
         {
             Console.OutputEncoding = System.Text.Encoding.UTF8;
@@ -28,11 +32,12 @@ namespace EmployeeTimeTracker
             }
             catch (Exception ex)
             {
+                // Last-resort catcher to avoid crashing; log helpful info
                 Console.WriteLine($"\n[FATAL] Unexpected error: {ex.Message}");
             }
             finally
             {
-                // Ask to save before exit if user didn't already
+                // On exit, ask user to save (Mode C: confirm)
                 Console.WriteLine("\nExiting. Save data before leaving? (Y/n)");
                 if (AskYesNo(true))
                 {
@@ -42,23 +47,26 @@ namespace EmployeeTimeTracker
             }
         }
 
+        // -------------------------
+        // Startup: load data & hooks
+        // -------------------------
         private static void AppStartup()
         {
             Console.WriteLine("Loading saved data...");
             employeeManager.LoadFromFile();
             timeManager.LoadFromFile();
 
-            employeeManager.OnEmployeeChanged += (msg) =>
-            {
-                Console.WriteLine($"[NOTIFICATION] {msg}");
-            };
+            // Keep UI notified of employee events
+            employeeManager.OnEmployeeChanged += (msg) => Console.WriteLine($"[NOTIFICATION] {msg}");
 
+            // Keep UI notified of time events (clock in/out)
             timeManager.OnClockEvent += (empId, time, action) =>
-            {
                 Console.WriteLine($"[CLOCK EVENT] {empId} - {action} at {time:HH:mm:ss}");
-            };
         }
 
+        // -------------------------
+        // Main loop
+        // -------------------------
         private static void RunMainLoop()
         {
             while (true)
@@ -70,7 +78,7 @@ namespace EmployeeTimeTracker
                 Console.WriteLine("[4] Save & Exit");
                 Console.Write("\nSelect option: ");
 
-                int mainOpt = ReadIntInRange(0, 4, allowZero: false);
+                int mainOpt = ReadIntInRange(1, 4, allowZero: false);
                 Console.WriteLine();
 
                 switch (mainOpt)
@@ -94,7 +102,9 @@ namespace EmployeeTimeTracker
             }
         }
 
-        #region Employee Menu
+        // =========================
+        // Employee management menu
+        // =========================
         private static void EmployeeMenu()
         {
             while (true)
@@ -125,46 +135,63 @@ namespace EmployeeTimeTracker
             }
         }
 
+        // -------------------------
+        // Add Full-Time Employee
+        // (Mode C: re-prompt only the invalid field)
+        // -------------------------
         private static void AddFullTimeEmployee()
         {
-            Console.Write("Employee ID: ");
-            string id = ReadNonEmptyTrimmed();
-            if (!Validators.IsValidEmployeeIdFormat(id))
-            {
-                Console.WriteLine("Invalid Employee ID format. Only letters, digits, '-' and '_' are allowed.");
-                return;
-            }
-            if (employeeManager.IdExists(id))
-            {
-                Console.WriteLine("Employee ID already exists.");
-                return;
-            }
+            Console.WriteLine("\n--- Add Full-Time Employee ---");
 
-            Console.Write("Name: ");
-            string name = ReadNonEmptyTrimmed();
-            if (!Validators.IsValidName(name))
-            {
-                Console.WriteLine("Invalid name. Must contain letters and spaces only.");
-                return;
-            }
+            // Employee ID (critical): validate format & uniqueness
+            string id = ReadUntilValid(
+                prompt: "Employee ID: ",
+                validate: s =>
+                {
+                    if (!Validators.IsValidEmployeeIdFormat(s))
+                        return "Invalid Employee ID. Allowed: letters, digits, '-' and '_'.";
+                    if (employeeManager.IdExists(s))
+                        return "Employee ID already exists.";
+                    return null;
+                });
 
-            Console.Write("Email: ");
-            string email = ReadValidEmail();
+            // Name (critical): must be letters + spaces
+            string name = ReadUntilValid(
+                prompt: "Name: ",
+                validate: s =>
+                {
+                    if (!Validators.IsValidName(s))
+                        return "Invalid name. Must contain only letters and spaces.";
+                    return null;
+                });
 
-            if (employeeManager.EmailExists(email))
-            {
-                Console.WriteLine("Email already used by another employee.");
-                return;
-            }
+            // Email (critical): format and uniqueness
+            string email = ReadUntilValid(
+                prompt: "Email: ",
+                validate: s =>
+                {
+                    if (!Validators.IsValidEmail(s))
+                        return "Invalid email format.";
+                    if (employeeManager.EmailExists(s))
+                        return "Email already used by another employee.";
+                    return null;
+                });
 
-            Console.Write("Hire date (yyyy-MM-dd) [leave empty = today]: ");
-            DateTime hireDate = ReadOptionalDate(DateTime.Now);
+            // Hire date (non-critical — optional)
+            Console.Write("Hire date (press Enter for today) [flexible formats allowed]: ");
+            DateTime hireDate = ReadOptionalDateSmart(DateTime.Now);
 
-            Console.Write("Monthly Salary: ");
-            decimal monthly = ReadDecimalInRange(0, MAX_MONTHLY_SALARY);
+            // Monthly salary (critical): numeric and within sane bounds
+            decimal monthly = ReadDecimalUntilValid(
+                prompt: "Monthly Salary: ",
+                min: 0m, max: MAX_MONTHLY_SALARY,
+                invalidMessage: $"Enter a decimal between 0 and {MAX_MONTHLY_SALARY:N0}.");
 
-            Console.Write("Overtime Rate (per hour): ");
-            decimal overtime = ReadDecimalInRange(0, MAX_OVERTIME_RATE);
+            // Overtime rate (critical)
+            decimal overtime = ReadDecimalUntilValid(
+                prompt: "Overtime Rate (per hour): ",
+                min: 0m, max: MAX_OVERTIME_RATE,
+                invalidMessage: $"Enter a decimal between 0 and {MAX_OVERTIME_RATE:N0}.");
 
             var emp = new FullTimeEmployee(id, name, email, hireDate, monthly, overtime);
 
@@ -184,42 +211,51 @@ namespace EmployeeTimeTracker
             }
         }
 
+        // -------------------------
+        // Add Part-Time Employee
+        // -------------------------
         private static void AddPartTimeEmployee()
         {
-            Console.Write("Employee ID: ");
-            string id = ReadNonEmptyTrimmed();
-            if (!Validators.IsValidEmployeeIdFormat(id))
-            {
-                Console.WriteLine("Invalid Employee ID format. Only letters, digits, '-' and '_' are allowed.");
-                return;
-            }
-            if (employeeManager.IdExists(id))
-            {
-                Console.WriteLine("Employee ID already exists.");
-                return;
-            }
+            Console.WriteLine("\n--- Add Part-Time Employee ---");
 
-            Console.Write("Name: ");
-            string name = ReadNonEmptyTrimmed();
-            if (!Validators.IsValidName(name))
-            {
-                Console.WriteLine("Invalid name. Must contain letters and spaces only.");
-                return;
-            }
+            string id = ReadUntilValid(
+                prompt: "Employee ID: ",
+                validate: s =>
+                {
+                    if (!Validators.IsValidEmployeeIdFormat(s))
+                        return "Invalid Employee ID. Allowed: letters, digits, '-' and '_'.";
+                    if (employeeManager.IdExists(s))
+                        return "Employee ID already exists.";
+                    return null;
+                });
 
-            Console.Write("Email: ");
-            string email = ReadValidEmail();
-            if (employeeManager.EmailExists(email))
-            {
-                Console.WriteLine("Email already used by another employee.");
-                return;
-            }
+            string name = ReadUntilValid(
+                prompt: "Name: ",
+                validate: s =>
+                {
+                    if (!Validators.IsValidName(s))
+                        return "Invalid name. Must contain only letters and spaces.";
+                    return null;
+                });
 
-            Console.Write("Hire date (yyyy-MM-dd) [leave empty = today]: ");
-            DateTime hireDate = ReadOptionalDate(DateTime.Now);
+            string email = ReadUntilValid(
+                prompt: "Email: ",
+                validate: s =>
+                {
+                    if (!Validators.IsValidEmail(s))
+                        return "Invalid email format.";
+                    if (employeeManager.EmailExists(s))
+                        return "Email already used by another employee.";
+                    return null;
+                });
 
-            Console.Write("Hourly Rate: ");
-            decimal rate = ReadDecimalInRange(0, MAX_HOURLY_RATE);
+            Console.Write("Hire date (press Enter for today) [flexible formats allowed]: ");
+            DateTime hireDate = ReadOptionalDateSmart(DateTime.Now);
+
+            decimal rate = ReadDecimalUntilValid(
+                prompt: "Hourly Rate: ",
+                min: 0m, max: MAX_HOURLY_RATE,
+                invalidMessage: $"Enter a decimal between 0 and {MAX_HOURLY_RATE:N0}.");
 
             var emp = new PartTimeEmployee(id, name, email, hireDate, rate);
 
@@ -239,6 +275,9 @@ namespace EmployeeTimeTracker
             }
         }
 
+        // -------------------------
+        // Remove / Find / Search
+        // -------------------------
         private static void RemoveEmployee()
         {
             Console.Write("Enter Employee ID to remove: ");
@@ -249,16 +288,10 @@ namespace EmployeeTimeTracker
             Console.WriteLine("Found:");
             emp.DisplayInfo();
             Console.WriteLine("\nAre you sure you want to delete this employee? This action cannot be undone. (y/N)");
-            if (!AskYesNo(false))
-            {
-                Console.WriteLine("Aborted.");
-                return;
-            }
+            if (!AskYesNo(false)) { Console.WriteLine("Aborted."); return; }
 
-            if (employeeManager.RemoveEmployee(id))
-                Console.WriteLine("Employee removed.");
-            else
-                Console.WriteLine("Removal failed.");
+            if (employeeManager.RemoveEmployee(id)) Console.WriteLine("Employee removed.");
+            else Console.WriteLine("Removal failed.");
         }
 
         private static void FindEmployee()
@@ -280,9 +313,10 @@ namespace EmployeeTimeTracker
 
             foreach (var r in results) r.DisplayInfo();
         }
-        #endregion
 
-        #region Time Menu
+        // =========================
+        // Time tracking menu
+        // =========================
         private static void TimeMenu()
         {
             while (true)
@@ -308,6 +342,7 @@ namespace EmployeeTimeTracker
             }
         }
 
+        // Clock in: validate employee exists before accepting notes (good UX)
         private static void ClockInFlow()
         {
             Console.Write("Employee ID: ");
@@ -329,6 +364,7 @@ namespace EmployeeTimeTracker
             }
         }
 
+        // Clock out: validate employee exists and rely on TimeRecordManager for errors
         private static void ClockOutFlow()
         {
             Console.Write("Employee ID: ");
@@ -356,9 +392,10 @@ namespace EmployeeTimeTracker
 
             timeManager.DisplayEmployeeRecords(id);
         }
-        #endregion
 
-        #region Reports
+        // =========================
+        // Reports menu
+        // =========================
         private static void ReportMenu()
         {
             while (true)
@@ -384,6 +421,8 @@ namespace EmployeeTimeTracker
             }
         }
 
+        // Calculate pay: uses FullTimeEmployee.CalculatePay(start,end) (prorated)
+        // and PartTimeEmployee.CalculatePay(hours) for hourly staff
         private static void CalculatePayReport()
         {
             Console.Write("Employee ID: ");
@@ -391,11 +430,11 @@ namespace EmployeeTimeTracker
             var emp = employeeManager.FindEmployeeById(id);
             if (emp == null) { Console.WriteLine("Employee not found."); return; }
 
-            Console.Write("Enter start date (yyyy-MM-dd): ");
-            DateTime start = ReadDateStrict();
+            Console.Write("Enter start date (flexible formats allowed): ");
+            DateTime start = ReadDateSmart();
 
-            Console.Write("Enter end date (yyyy-MM-dd): ");
-            DateTime end = ReadDateStrict();
+            Console.Write("Enter end date (flexible formats allowed): ");
+            DateTime end = ReadDateSmart();
 
             if (end < start) { Console.WriteLine("End date must be after start date."); return; }
 
@@ -404,12 +443,28 @@ namespace EmployeeTimeTracker
 
             if (emp is FullTimeEmployee ft)
             {
-                totalPay = ft.CalculatePay(start, end);
+                try
+                {
+                    totalPay = ft.CalculatePay(start, end);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error calculating pay for full-time employee: {ex.Message}");
+                    return;
+                }
             }
             else if (emp is PartTimeEmployee pt)
             {
                 totalHours = timeManager.CalculateTotalHours(id, start, end);
-                totalPay = pt.CalculatePay(totalHours);
+                try
+                {
+                    totalPay = pt.CalculatePay(totalHours);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error calculating pay for part-time employee: {ex.Message}");
+                    return;
+                }
             }
 
             Console.WriteLine("\n--- PAY CALCULATION ---");
@@ -433,10 +488,17 @@ namespace EmployeeTimeTracker
                 Console.WriteLine($"{emp.EmployeeId} - {emp.Name}: {hours:F2} hours");
             }
         }
-        #endregion
 
-        #region Helper Input Methods
+        // =========================
+        // Helper Input Methods (Mode C)
+        // - Re-prompt only the invalid field
+        // - Date smart parser accepts date + optional time
+        // =========================
 
+        /// <summary>
+        /// Reads an int and enforces range. If allowZero is true, 0 is valid (used for menu back).
+        /// This method will repeatedly prompt until a valid integer in the allowed range is entered.
+        /// </summary>
         private static int ReadIntInRange(int min, int max, bool allowZero)
         {
             while (true)
@@ -451,6 +513,9 @@ namespace EmployeeTimeTracker
             }
         }
 
+        /// <summary>
+        /// Read non-empty string, trims whitespace. Re-prompts until non-empty.
+        /// </summary>
         private static string ReadNonEmptyTrimmed()
         {
             while (true)
@@ -461,7 +526,10 @@ namespace EmployeeTimeTracker
             }
         }
 
-        private static string ReadValidEmail()
+        /// <summary>
+        /// Read email with Validator.IsValidEmail. Re-prompts only the email field (Mode C).
+        /// </summary>
+        private static string ReadValidEmailField()
         {
             while (true)
             {
@@ -472,44 +540,145 @@ namespace EmployeeTimeTracker
             }
         }
 
-        private static DateTime ReadOptionalDate(DateTime defaultValue)
-        {
-            var s = Console.ReadLine();
-            if (string.IsNullOrWhiteSpace(s)) return defaultValue.Date;
-            if (DateTime.TryParseExact(s.Trim(), "yyyy-MM-dd", CultureInfo.InvariantCulture,
-                DateTimeStyles.None, out var dt)) return dt.Date;
-            Console.WriteLine("? Invalid date. Use yyyy-MM-dd.");
-            return ReadOptionalDate(defaultValue);
-        }
-
-        private static DateTime ReadDateStrict()
+        /// <summary>
+        /// Smart date parser: accepts many common formats, and also accepts time if provided.
+        /// (Option 1 UX + user requested accepting time as well.)
+        /// Re-prompts only this date field.
+        /// </summary>
+        private static DateTime ReadDateSmart()
         {
             while (true)
             {
-                var s = Console.ReadLine() ?? "";
-                if (DateTime.TryParseExact(s.Trim(), "yyyy-MM-dd", CultureInfo.InvariantCulture,
-                    DateTimeStyles.None, out var dt))
-                {
-                    return dt.Date;
-                }
-                Console.Write("? Invalid date. Use yyyy-MM-dd.\nEnter date: ");
+                var raw = Console.ReadLine() ?? "";
+                raw = raw.Trim();
+                if (TryParseFlexibleDateTime(raw, out DateTime dt)) return dt;
+                Console.Write("? Invalid date/time. Try again (e.g. 11/21/2025 or 2025-11-21 14:30): ");
             }
         }
 
-        private static decimal ReadDecimalInRange(decimal min, decimal max)
+        /// <summary>
+        /// For optional hire date where empty input means defaultValue.
+        /// </summary>
+        private static DateTime ReadOptionalDateSmart(DateTime defaultValue)
+        {
+            var raw = Console.ReadLine();
+            if (string.IsNullOrWhiteSpace(raw)) return defaultValue.Date;
+
+            raw = raw.Trim();
+            if (TryParseFlexibleDateTime(raw, out DateTime dt)) return dt.Date;
+
+            // Re-prompt only this field (Mode C)
+            Console.WriteLine("? Invalid date. Try again.");
+            return ReadOptionalDateSmart(defaultValue);
+        }
+
+        /// <summary>
+        /// Attempt to parse a wide range of date/time formats.
+        /// Returns true if parsed. Accepts time as well if provided.
+        /// Uses invariant culture and a list of common patterns; also falls back to DateTime.TryParse.
+        /// </summary>
+        private static bool TryParseFlexibleDateTime(string input, out DateTime result)
+        {
+            // Try common explicit patterns first (date + optional time)
+            string[] patterns =
+            {
+                "yyyy-MM-dd HH:mm",
+                "yyyy-MM-dd H:mm",
+                "yyyy-MM-dd",
+                "MM/dd/yyyy HH:mm",
+                "M/d/yyyy H:mm",
+                "MM/dd/yyyy",
+                "M/d/yyyy",
+                "dd/MM/yyyy",
+                "d/M/yyyy",
+                "yyyy/MM/dd",
+                "dd MMM yyyy",
+                "d MMM yyyy",
+                "MMM dd yyyy",
+                "MMMM dd, yyyy",
+                "yyyy-MM-ddTHH:mm",
+                "yyyy-MM-ddTHH:mm:ss",
+                "yyyy-MM-dd HH:mm:ss",
+                "M/d/yyyy h:mm tt",
+                "MM/dd/yyyy h:mm tt"
+            };
+
+            // 1) Try exact patterns with invariant culture
+            foreach (var p in patterns)
+            {
+                if (DateTime.TryParseExact(input, p, CultureInfo.InvariantCulture,
+                    DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeLocal, out result))
+                {
+                    return true;
+                }
+            }
+
+            // 2) Fallback to general parse (accepts many localized forms)
+            if (DateTime.TryParse(input, CultureInfo.CurrentCulture, DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeLocal, out result))
+                return true;
+
+            if (DateTime.TryParse(input, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeLocal, out result))
+                return true;
+
+            result = default;
+            return false;
+        }
+
+        /// <summary>
+        /// Reusable helper: prompt until validate returns null (valid) or a string message (invalid).
+        /// Returns the successful trimmed input.
+        /// This implements Mode C: only re-prompt the failed field.
+        /// </summary>
+        private static string ReadUntilValid(string prompt, Func<string, string?> validate)
         {
             while (true)
             {
-                var s = Console.ReadLine() ?? "";
-                s = s.Trim();
-                if (decimal.TryParse(s, out var d))
-                {
-                    if (d >= min && d <= max) return d;
-                }
-                Console.Write("? Invalid decimal number. Try again: ");
+                Console.Write(prompt);
+                string s = (Console.ReadLine() ?? "").Trim();
+
+                string? problem = validate(s);
+                if (problem == null) return s;
+
+                Console.WriteLine($"? {problem}"); // show reason
+                // re-prompt only this field (Mode C)
             }
         }
 
+        /// <summary>
+        /// Read a decimal with bounds and re-prompt until valid.
+        /// </summary>
+        private static decimal ReadDecimalUntilValid(string prompt, decimal min, decimal max, string invalidMessage)
+        {
+            while (true)
+            {
+                Console.Write(prompt);
+                var raw = Console.ReadLine() ?? "";
+                raw = raw.Trim();
+                if (decimal.TryParse(raw, out decimal d) && d >= min && d <= max)
+                    return d;
+
+                Console.WriteLine($"? {invalidMessage}");
+                // re-prompt only this field (Mode C)
+            }
+        }
+
+        /// <summary>
+        /// Simplified wrapper used earlier for menus.
+        /// </summary>
+        private static string ReadValidEmail()
+        {
+            // Reuse the read-until-valid pattern for email in older code paths
+            return ReadUntilValid("Email: ", s =>
+            {
+                if (!Validators.IsValidEmail(s)) return "Invalid email format.";
+                return null;
+            });
+        }
+
+        /// <summary>
+        /// Minimal yes/no helper: returns true for yes, false for no.
+        /// Default is used when input empty.
+        /// </summary>
         private static bool AskYesNo(bool defaultYes)
         {
             var s = Console.ReadLine() ?? "";
@@ -520,6 +689,38 @@ namespace EmployeeTimeTracker
             return defaultYes;
         }
 
-        #endregion
+        // -------------------------
+        // Utility small helpers
+        // -------------------------
+        private static string ReadNonEmptyTrimmedPrompt(string prompt)
+        {
+            while (true)
+            {
+                Console.Write(prompt);
+                var s = Console.ReadLine() ?? "";
+                if (!string.IsNullOrWhiteSpace(s)) return s.Trim();
+                Console.WriteLine("Input required. Try again.");
+            }
+        }
+
+        private static string ReadNonEmptyTrimmed()
+        {
+            while (true)
+            {
+                var s = Console.ReadLine() ?? "";
+                if (!string.IsNullOrWhiteSpace(s)) return s.Trim();
+                Console.Write("Input required. Try again: ");
+            }
+        }
+
+        // -------------------------
+        // Pretty header
+        // -------------------------
+        private static void PrintHeader()
+        {
+            Console.WriteLine("\n╔════════════════════════════════════════╗");
+            Console.WriteLine("║   EMPLOYEE TIME TRACKER SYSTEM         ║");
+            Console.WriteLine("╚════════════════════════════════════════╝");
+        }
     }
 }
